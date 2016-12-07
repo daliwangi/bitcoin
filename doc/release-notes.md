@@ -41,6 +41,27 @@ report issues about Windows XP to the issue tracker.
 Notable changes
 ===============
 
+Low-level RPC changes
+----------------------
+
+- `importprunedfunds` only accepts two required arguments. Some versions accept
+  an optional third arg, which was always ignored. Make sure to never pass more
+  than two arguments.
+
+Removal of Priority Estimation
+------------------------------
+
+- Estimation of "priority" needed for a transaction to be included within a target
+  number of blocks has been removed.  The rpc calls are deprecated and will either
+  return -1 or 1e24 appropriately. The format for `fee_estimates.dat` has also
+  changed to no longer save these priority estimates. It will automatically be
+  converted to the new format which is not readable by prior versions of the
+  software.
+
+- The concept of "priority" transactions is planned to be removed in the next
+  major version. To prepare for this, the default for the rate limit of priority
+  transactions (`-limitfreerelay`) has been set to `0` kB/minute.
+
 0.14.0 Change log
 =================
 
@@ -50,6 +71,14 @@ the code changes and accompanying discussion, both the pull request and
 git merge commit are mentioned.
 
 ### RPC and REST
+
+UTXO set query (`GET /rest/getutxos/<checkmempool>/<txid>-<n>/<txid>-<n>/.../<txid>-<n>.<bin|hex|json>`) responses
+were changed to return status code HTTP_BAD_REQUEST (400) instead of HTTP_INTERNAL_SERVER_ERROR (500) when requests
+contain invalid parameters.
+
+The first boolean argument to `getaddednodeinfo` has been removed. This is an incompatible change.
+
+Call "getmininginfo" loses the "testnet" field in favor of the more generic "chain" (which has been present for years).
 
 ### Configuration and command-line options
 
