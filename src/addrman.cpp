@@ -1,5 +1,5 @@
 // Copyright (c) 2012 Pieter Wuille
-// Copyright (c) 2012-2015 The Bitcoin Core developers
+// Copyright (c) 2012-2016 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -54,11 +54,8 @@ double CAddrInfo::GetChance(int64_t nNow) const
 {
     double fChance = 1.0;
 
-    int64_t nSinceLastSeen = nNow - nTime;
     int64_t nSinceLastTry = nNow - nLastTry;
 
-    if (nSinceLastSeen < 0)
-        nSinceLastSeen = 0;
     if (nSinceLastTry < 0)
         nSinceLastTry = 0;
 
@@ -255,7 +252,7 @@ bool CAddrMan::Add_(const CAddress& addr, const CNetAddr& source, int64_t nTimeP
     int nId;
     CAddrInfo* pinfo = Find(addr, &nId);
 
-    // Do not set a penality for a source's self-announcement
+    // Do not set a penalty for a source's self-announcement
     if (addr == source) {
         nTimePenalty = 0;
     }
