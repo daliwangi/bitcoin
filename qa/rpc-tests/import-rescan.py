@@ -2,7 +2,9 @@
 # Copyright (c) 2014-2016 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Test rescan behavior of importaddress, importpubkey, importprivkey, and
+"""Test wallet import RPCs.
+
+Test rescan behavior of importaddress, importpubkey, importprivkey, and
 importmulti RPCs with different types of keys and rescan options.
 
 In the first part of the test, node 1 creates an address for each type of
@@ -54,7 +56,7 @@ class Variant(collections.namedtuple("Variant", "call data rescan prune")):
                 "scriptPubKey": {
                     "address": self.address["address"]
                 },
-                "timestamp": timestamp + RESCAN_WINDOW + (1 if self.rescan == Rescan.late_timestamp else 0),
+                "timestamp": timestamp + TIMESTAMP_WINDOW + (1 if self.rescan == Rescan.late_timestamp else 0),
                 "pubkeys": [self.address["pubkey"]] if self.data == Data.pub else [],
                 "keys": [self.key] if self.data == Data.priv else [],
                 "label": self.label,
@@ -106,7 +108,7 @@ ImportNode = collections.namedtuple("ImportNode", "prune rescan")
 IMPORT_NODES = [ImportNode(*fields) for fields in itertools.product((False, True), repeat=2)]
 
 # Rescans start at the earliest block up to 2 hours before the key timestamp.
-RESCAN_WINDOW = 2 * 60 * 60
+TIMESTAMP_WINDOW = 2 * 60 * 60
 
 
 class ImportRescanTest(BitcoinTestFramework):
@@ -115,7 +117,7 @@ class ImportRescanTest(BitcoinTestFramework):
         self.num_nodes = 2 + len(IMPORT_NODES)
 
     def setup_network(self):
-        extra_args = [["-debug=1"] for _ in range(self.num_nodes)]
+        extra_args = [[] for _ in range(self.num_nodes)]
         for i, import_node in enumerate(IMPORT_NODES, 2):
             if import_node.prune:
                 extra_args[i] += ["-prune=1"]
@@ -139,7 +141,7 @@ class ImportRescanTest(BitcoinTestFramework):
         self.nodes[0].generate(1)
         assert_equal(self.nodes[0].getrawmempool(), [])
         timestamp = self.nodes[0].getblockheader(self.nodes[0].getbestblockhash())["time"]
-        set_node_times(self.nodes, timestamp + RESCAN_WINDOW + 1)
+        set_node_times(self.nodes, timestamp + TIMESTAMP_WINDOW + 1)
         self.nodes[0].generate(1)
         sync_blocks(self.nodes)
 

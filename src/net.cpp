@@ -44,8 +44,13 @@
 // We add a random period time (0 to 1 seconds) to feeler connections to prevent synchronization.
 #define FEELER_SLEEP_WINDOW 1
 
-#if !defined(HAVE_MSG_NOSIGNAL) && !defined(MSG_NOSIGNAL)
+#if !defined(HAVE_MSG_NOSIGNAL)
 #define MSG_NOSIGNAL 0
+#endif
+
+// MSG_DONTWAIT is not available on some platforms, if it doesn't exist define it as 0
+#if !defined(HAVE_MSG_DONTWAIT)
+#define MSG_DONTWAIT 0
 #endif
 
 // Fix for ancient MinGW versions, that don't have defined these in ws2tcpip.h.
@@ -2235,8 +2240,9 @@ bool CConnman::Start(CScheduler& scheduler, std::string& strNodeError, Options c
     SetBestHeight(connOptions.nBestHeight);
 
     clientInterface = connOptions.uiInterface;
-    if (clientInterface)
-        clientInterface->InitMessage(_("Loading addresses..."));
+    if (clientInterface) {
+        clientInterface->InitMessage(_("Loading P2P addresses..."));
+    }
     // Load addresses from peers.dat
     int64_t nStart = GetTimeMillis();
     {
@@ -2312,7 +2318,7 @@ bool CConnman::Start(CScheduler& scheduler, std::string& strNodeError, Options c
     threadMessageHandler = std::thread(&TraceThread<std::function<void()> >, "msghand", std::function<void()>(std::bind(&CConnman::ThreadMessageHandler, this)));
 
     // Dump network addresses
-    scheduler.scheduleEvery(boost::bind(&CConnman::DumpData, this), DUMP_ADDRESSES_INTERVAL);
+    scheduler.scheduleEvery(std::bind(&CConnman::DumpData, this), DUMP_ADDRESSES_INTERVAL * 1000);
 
     return true;
 }
