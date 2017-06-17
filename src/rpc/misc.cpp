@@ -4,11 +4,14 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "base58.h"
+#include "chain.h"
 #include "clientversion.h"
 #include "init.h"
 #include "validation.h"
+#include "httpserver.h"
 #include "net.h"
 #include "netbase.h"
+#include "rpc/blockchain.h"
 #include "rpc/server.h"
 #include "timedata.h"
 #include "util.h"
@@ -20,8 +23,9 @@
 #endif
 
 #include <stdint.h>
-
-#include <boost/assign/list_of.hpp>
+#ifdef HAVE_MALLOC_INFO
+#include <malloc.h>
+#endif
 
 #include <univalue.h>
 
@@ -143,7 +147,7 @@ public:
             obj.push_back(Pair("script", GetTxnOutputType(whichType)));
             obj.push_back(Pair("hex", HexStr(subscript.begin(), subscript.end())));
             UniValue a(UniValue::VARR);
-            BOOST_FOREACH(const CTxDestination& addr, addresses)
+            for (const CTxDestination& addr : addresses)
                 a.push_back(CBitcoinAddress(addr).ToString());
             obj.push_back(Pair("addresses", a));
             if (whichType == TX_MULTISIG)
@@ -206,8 +210,8 @@ UniValue validateaddress(const JSONRPCRequest& request)
 
 #ifdef ENABLE_WALLET
         isminetype mine = pwallet ? IsMine(*pwallet, dest) : ISMINE_NO;
-        ret.push_back(Pair("ismine", (mine & ISMINE_SPENDABLE) ? true : false));
-        ret.push_back(Pair("iswatchonly", (mine & ISMINE_WATCH_ONLY) ? true: false));
+        ret.push_back(Pair("ismine", bool(mine & ISMINE_SPENDABLE)));
+        ret.push_back(Pair("iswatchonly", bool(mine & ISMINE_WATCH_ONLY)));
         UniValue detail = boost::apply_visitor(DescribeAddressVisitor(pwallet), dest);
         ret.pushKVs(detail);
         if (pwallet && pwallet->mapAddressBook.count(dest)) {
@@ -466,7 +470,7 @@ UniValue setmocktime(const JSONRPCRequest& request)
     // ensure all call sites of GetTime() are accessing this safely.
     LOCK(cs_main);
 
-    RPCTypeCheck(request.params, boost::assign::list_of(UniValue::VNUM));
+    RPCTypeCheck(request.params, {UniValue::VNUM});
     SetMockTime(request.params[0].get_int64());
 
     return NullUniValue;
@@ -485,16 +489,39 @@ static UniValue RPCLockedMemoryInfo()
     return obj;
 }
 
+#ifdef HAVE_MALLOC_INFO
+static std::string RPCMallocInfo()
+{
+    char *ptr = nullptr;
+    size_t size = 0;
+    FILE *f = open_memstream(&ptr, &size);
+    if (f) {
+        malloc_info(0, f);
+        fclose(f);
+        if (ptr) {
+            std::string rv(ptr, size);
+            free(ptr);
+            return rv;
+        }
+    }
+    return "";
+}
+#endif
+
 UniValue getmemoryinfo(const JSONRPCRequest& request)
 {
     /* Please, avoid using the word "pool" here in the RPC interface or help,
      * as users will undoubtedly confuse it with the other "memory pool"
      */
-    if (request.fHelp || request.params.size() != 0)
+    if (request.fHelp || request.params.size() > 1)
         throw std::runtime_error(
-            "getmemoryinfo\n"
+            "getmemoryinfo (\"mode\")\n"
             "Returns an object containing information about memory usage.\n"
-            "\nResult:\n"
+            "Arguments:\n"
+            "1. \"mode\" determines what kind of information is returned. This argument is optional, the default mode is \"stats\".\n"
+            "  - \"stats\" returns general statistics about memory usage in the daemon.\n"
+            "  - \"mallocinfo\" returns an XML string describing low-level heap state (only available if compiled with glibc 2.10+).\n"
+            "\nResult (mode \"stats\"):\n"
             "{\n"
             "  \"locked\": {               (json object) Information about locked memory manager\n"
             "    \"used\": xxxxx,          (numeric) Number of bytes used\n"
@@ -505,13 +532,94 @@ UniValue getmemoryinfo(const JSONRPCRequest& request)
             "    \"chunks_free\": xxxxx,   (numeric) Number unused chunks\n"
             "  }\n"
             "}\n"
+            "\nResult (mode \"mallocinfo\"):\n"
+            "\"<malloc version=\"1\">...\"\n"
             "\nExamples:\n"
             + HelpExampleCli("getmemoryinfo", "")
             + HelpExampleRpc("getmemoryinfo", "")
         );
-    UniValue obj(UniValue::VOBJ);
-    obj.push_back(Pair("locked", RPCLockedMemoryInfo()));
-    return obj;
+
+    std::string mode = (request.params.size() < 1 || request.params[0].isNull()) ? "stats" : request.params[0].get_str();
+    if (mode == "stats") {
+        UniValue obj(UniValue::VOBJ);
+        obj.push_back(Pair("locked", RPCLockedMemoryInfo()));
+        return obj;
+    } else if (mode == "mallocinfo") {
+#ifdef HAVE_MALLOC_INFO
+        return RPCMallocInfo();
+#else
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "mallocinfo is only available when compiled with glibc 2.10+");
+#endif
+    } else {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "unknown mode " + mode);
+    }
+}
+
+uint32_t getCategoryMask(UniValue cats) {
+    cats = cats.get_array();
+    uint32_t mask = 0;
+    for (unsigned int i = 0; i < cats.size(); ++i) {
+        uint32_t flag = 0;
+        std::string cat = cats[i].get_str();
+        if (!GetLogCategory(&flag, &cat)) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "unknown logging category " + cat);
+        }
+        mask |= flag;
+    }
+    return mask;
+}
+
+UniValue logging(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() > 2) {
+        throw std::runtime_error(
+            "logging [include,...] <exclude>\n"
+            "Gets and sets the logging configuration.\n"
+            "When called without an argument, returns the list of categories that are currently being debug logged.\n"
+            "When called with arguments, adds or removes categories from debug logging.\n"
+            "The valid logging categories are: " + ListLogCategories() + "\n"
+            "libevent logging is configured on startup and cannot be modified by this RPC during runtime."
+            "Arguments:\n"
+            "1. \"include\" (array of strings) add debug logging for these categories.\n"
+            "2. \"exclude\" (array of strings) remove debug logging for these categories.\n"
+            "\nResult: <categories>  (string): a list of the logging categories that are active.\n"
+            "\nExamples:\n"
+            + HelpExampleCli("logging", "\"[\\\"all\\\"]\" \"[\\\"http\\\"]\"")
+            + HelpExampleRpc("logging", "[\"all\"], \"[libevent]\"")
+        );
+    }
+
+    uint32_t originalLogCategories = logCategories;
+    if (request.params.size() > 0 && request.params[0].isArray()) {
+        logCategories |= getCategoryMask(request.params[0]);
+    }
+
+    if (request.params.size() > 1 && request.params[1].isArray()) {
+        logCategories &= ~getCategoryMask(request.params[1]);
+    }
+
+    // Update libevent logging if BCLog::LIBEVENT has changed.
+    // If the library version doesn't allow it, UpdateHTTPServerLogging() returns false,
+    // in which case we should clear the BCLog::LIBEVENT flag.
+    // Throw an error if the user has explicitly asked to change only the libevent
+    // flag and it failed.
+    uint32_t changedLogCategories = originalLogCategories ^ logCategories;
+    if (changedLogCategories & BCLog::LIBEVENT) {
+        if (!UpdateHTTPServerLogging(logCategories & BCLog::LIBEVENT)) {
+            logCategories &= ~BCLog::LIBEVENT;
+            if (changedLogCategories == BCLog::LIBEVENT) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "libevent logging cannot be updated when using libevent before v2.1.1.");
+            }
+        }
+    }
+
+    UniValue result(UniValue::VOBJ);
+    std::vector<CLogCategoryActive> vLogCatActive = ListActiveLogCategories();
+    for (const auto& logCatActive : vLogCatActive) {
+        result.pushKV(logCatActive.category, logCatActive.active);
+    }
+
+    return result;
 }
 
 UniValue echo(const JSONRPCRequest& request)
@@ -531,7 +639,7 @@ static const CRPCCommand commands[] =
 { //  category              name                      actor (function)         okSafeMode
   //  --------------------- ------------------------  -----------------------  ----------
     { "control",            "getinfo",                &getinfo,                true,  {} }, /* uses wallet if enabled */
-    { "control",            "getmemoryinfo",          &getmemoryinfo,          true,  {} },
+    { "control",            "getmemoryinfo",          &getmemoryinfo,          true,  {"mode"} },
     { "util",               "validateaddress",        &validateaddress,        true,  {"address"} }, /* uses wallet if enabled */
     { "util",               "createmultisig",         &createmultisig,         true,  {"nrequired","keys"} },
     { "util",               "verifymessage",          &verifymessage,          true,  {"address","signature","message"} },
@@ -540,7 +648,8 @@ static const CRPCCommand commands[] =
     /* Not shown in help */
     { "hidden",             "setmocktime",            &setmocktime,            true,  {"timestamp"}},
     { "hidden",             "echo",                   &echo,                   true,  {"arg0","arg1","arg2","arg3","arg4","arg5","arg6","arg7","arg8","arg9"}},
-    { "hidden",             "echojson",               &echo,                  true,  {"arg0","arg1","arg2","arg3","arg4","arg5","arg6","arg7","arg8","arg9"}},
+    { "hidden",             "echojson",               &echo,                   true,  {"arg0","arg1","arg2","arg3","arg4","arg5","arg6","arg7","arg8","arg9"}},
+    { "hidden",             "logging",                &logging,                true,  {"include", "exclude"}},
 };
 
 void RegisterMiscRPCCommands(CRPCTable &t)
